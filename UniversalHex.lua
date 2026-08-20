@@ -16,16 +16,18 @@ local Stats = game:GetService("Stats")
 local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
 
--- Standalone Janitor dependency
+-- Loads the Janitor module to handle garbage collection and memory leaks
 local Janitor = loadstring(game:HttpGet("https://raw.githubusercontent.com/VoiderHex/Scripts/refs/heads/main/Janitor.lua"))()
 
 local UniversalHex = {}
 UniversalHex.__index = UniversalHex
 
+-- Initializes a new UniversalHex instance
 function UniversalHex.new(config)
     config = config or {}
     local projectId = config.ProjectId or "UniversalHex_Default"
     
+    -- Prevent duplicate instances from running in the same project
     if getgenv()[projectId] then
         pcall(function() getgenv()[projectId]:Destroy() end)
         task.wait(0.1)
@@ -37,6 +39,7 @@ function UniversalHex.new(config)
     self.ProjectId = projectId
     self.Janitor = Janitor.new()
     
+    -- Stores default states so we can revert them later if needed
     self._state = {
         SpeedValue = 16,
         JumpPowerValue = 50,
@@ -50,7 +53,13 @@ function UniversalHex.new(config)
     self._espGroups = {}
     self._espCache = {}
     self._espEngineRunning = false
-    self._fpsCache = {}
+    
+    -- Cache for FPS optimization to restore textures and materials
+    self._fpsCache = {
+        Materials = {},
+        Textures = {},
+        Effects = {}
+    }
     
     getgenv()[projectId] = self
     self:_log("INFO", "Initialized successfully in " .. self.Mode .. " mode for project: " .. projectId)
@@ -58,14 +67,14 @@ function UniversalHex.new(config)
     return self
 end
 
+-- Internal logger for dev mode
 function UniversalHex:_log(level, message)
     if self.Mode == "dev" then
         print(string.format("[UniversalHex | %s] %s", string.upper(level), message))
     end
 end
 
---// CHARACTER UTILITY
-
+-- Safely retrieves local player's character data
 function UniversalHex:GetCharacter()
     local char = LocalPlayer.Character
     if not char then return nil, nil, nil end
@@ -74,14 +83,14 @@ function UniversalHex:GetCharacter()
     return char, hrp, hum
 end
 
+-- Binds UI to Janitor so it cleans up when the script is destroyed
 function UniversalHex:AttachUI(uiInstance)
     if typeof(uiInstance) == "Instance" or type(uiInstance) == "table" then
         self.Janitor:Add(uiInstance, "Destroy", "Main_Rayfield_UI")
     end
 end
 
---// DYNAMIC ESP ENGINE
-
+-- Dynamic ESP Engine
 function UniversalHex:CreateEspGroup(groupName, groupType)
     groupType = groupType or "Players"
     
@@ -120,7 +129,7 @@ function UniversalHex:_startEspEngine()
     local espFolder = Instance.new("Folder")
     espFolder.Name = "UniversalHex_ESP"
     pcall(function()
-        if gethui then espFolder.Parent = gethui() else espFolder.Parent = CoreGui end
+        espFolder.Parent = gethui and gethui() or CoreGui
     end)
     self.Janitor:Add(espFolder, "Destroy", "EspFolder")
     
@@ -128,6 +137,7 @@ function UniversalHex:_startEspEngine()
         for groupName, group in pairs(self._espGroups) do
             local currentCache = self._espCache[groupName]
             
+            -- Clear highlights if the group is disabled
             if not group.Enabled then
                 for inst, highlight in pairs(currentCache) do highlight:Destroy() end
                 table.clear(currentCache)
@@ -154,6 +164,7 @@ function UniversalHex:_startEspEngine()
                 end
             end
             
+            -- Remove highlights for instances that are no longer valid
             for inst, highlight in pairs(currentCache) do
                 if not validInstances[inst] or not inst.Parent then
                     highlight:Destroy()
@@ -161,6 +172,7 @@ function UniversalHex:_startEspEngine()
                 end
             end
             
+            -- Create or update highlights for valid instances
             for inst, _ in pairs(validInstances) do
                 local highlight = currentCache[inst]
                 if not highlight then
@@ -187,8 +199,9 @@ function UniversalHex:_startEspEngine()
     self.Janitor:Add(connection, "Disconnect", "EspEngineLoop")
 end
 
---// COMBAT & DEFENSE
+-- Combat and Defense Functions
 
+-- Protects the user from being flung by other players by stripping collisions and freezing angular velocity
 function UniversalHex:SetAntiFlingEnabled(enabled)
     if not enabled then
         self.Janitor:Remove("AntiFlingLoop")
@@ -200,11 +213,13 @@ function UniversalHex:SetAntiFlingEnabled(enabled)
             local localChar, hrp, _ = self:GetCharacter()
             if not localChar then return end
             
+            -- Kill unexpected intense velocities on our character
             if hrp and (hrp.AssemblyAngularVelocity.Magnitude > 50 or hrp.AssemblyLinearVelocity.Magnitude > 200) then
                 hrp.AssemblyAngularVelocity = Vector3.zero
                 hrp.AssemblyLinearVelocity = Vector3.zero
             end
             
+            -- Disable collisions with other players
             for _, player in ipairs(Players:GetPlayers()) do
                 if player ~= LocalPlayer and player.Character then
                     for _, part in ipairs(player.Character:GetDescendants()) do
@@ -219,6 +234,7 @@ function UniversalHex:SetAntiFlingEnabled(enabled)
     self.Janitor:Add(connection, "Disconnect", "AntiFlingLoop")
 end
 
+-- Activates a local fling exploit targeting a specific player
 function UniversalHex:SetFlingActivate(enabled, targetPlayer)
     if not enabled then
         self.Janitor:Remove("FlingLoop")
@@ -237,8 +253,10 @@ function UniversalHex:SetFlingActivate(enabled, targetPlayer)
             local _, hrp, hum = self:GetCharacter()
             if not hrp or not hum or hum.Health <= 0 then return end
             
+            -- Spin the character at extreme speeds
             hrp.RotVelocity = Vector3.new(20000, 20000, 20000)
             
+            -- Stick to target
             if targetPlayer and targetPlayer.Character then
                 local targetHrp = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
                 if targetHrp then
@@ -250,7 +268,7 @@ function UniversalHex:SetFlingActivate(enabled, targetPlayer)
     self.Janitor:Add(connection, "Disconnect", "FlingLoop")
 end
 
---// MOVEMENT, FLY & KINEMATICS
+-- Movement, Fly & Kinematics
 
 function UniversalHex:SetSpeedEnabled(enabled)
     if not enabled then self.Janitor:Remove("SpeedLoop") return end
@@ -318,6 +336,7 @@ function UniversalHex:SetFlySpeed(speed)
     self._state.FlySpeed = speed
 end
 
+-- Implements a smooth BodyMover-based flight system
 function UniversalHex:SetFlyEnabled(enabled)
     if not enabled then
         self.Janitor:Remove("FlyInputBegan")
@@ -380,7 +399,7 @@ function UniversalHex:SetFlyEnabled(enabled)
     end), "Disconnect", "FlyLoop")
 end
 
---// WORLD & TELEPORT UTILITIES
+-- World and Teleport Utilities
 
 function UniversalHex:Teleport(targetCFrame)
     local char, hrp, _ = self:GetCharacter()
@@ -394,6 +413,7 @@ function UniversalHex:CancelTween()
     self.Janitor:Remove("CurrentTweenAction")
 end
 
+-- Moves the player smoothly to a target CFrame, anchoring them during transit to prevent anti-cheat glitches
 function UniversalHex:TweenTo(targetCFrame, speed, yield)
     self:CancelTween()
     local char, hrp, hum = self:GetCharacter()
@@ -430,8 +450,9 @@ function UniversalHex:TweenTo(targetCFrame, speed, yield)
     return true
 end
 
+-- Simulates touching a part via the Roblox engine
 function UniversalHex:TouchPart(part)
-    local char, hrp, _ = self:GetCharacter()
+    local _, hrp, _ = self:GetCharacter()
     if hrp and part and part:FindFirstChild("TouchInterest") then
         pcall(function()
             firetouchinterest(hrp, part, 0)
@@ -443,7 +464,7 @@ function UniversalHex:TouchPart(part)
     return false
 end
 
---// SYSTEM & NETWORK CONTROLS
+-- System and Network Controls
 
 function UniversalHex:SetAntiAfkEnabled(enabled)
     if not enabled then self.Janitor:Remove("AntiAfkConnection") return end
@@ -456,57 +477,78 @@ function UniversalHex:SetAntiAfkEnabled(enabled)
     self.Janitor:Add(connection, "Disconnect", "AntiAfkConnection")
 end
 
+-- Modifies visuals to reduce rendering cost
 function UniversalHex:_applyOptimization(obj, extremeMode)
     pcall(function()
-        if not extremeMode and not self._fpsCache[obj] then self._fpsCache[obj] = {} end
         if obj:IsA("BasePart") then
-            if not extremeMode and not self._fpsCache[obj].Material then
-                self._fpsCache[obj].Material = obj.Material
-                self._fpsCache[obj].Reflectance = obj.Reflectance
-                self._fpsCache[obj].CastShadow = obj.CastShadow
+            if not extremeMode and not self._fpsCache.Materials[obj] then
+                self._fpsCache.Materials[obj] = obj.Material
             end
             obj.Material = Enum.Material.SmoothPlastic
             obj.Reflectance = 0
             obj.CastShadow = false
+            
         elseif obj:IsA("Decal") or obj:IsA("Texture") then
-            if not extremeMode and not self._fpsCache[obj].Transparency then self._fpsCache[obj].Transparency = obj.Transparency end
-            obj.Transparency = 1
+            -- Properly unparenting textures usually gives better performance than transparency
+            if not extremeMode and self._fpsCache.Textures[obj] == nil then
+                self._fpsCache.Textures[obj] = obj.Parent
+            end
+            obj.Parent = nil
+            
         elseif obj:IsA("PostEffect") or obj:IsA("Atmosphere") or obj:IsA("Clouds") or obj:IsA("ParticleEmitter") or obj:IsA("Trail") then
-            if not extremeMode and self._fpsCache[obj].Enabled == nil then self._fpsCache[obj].Enabled = obj.Enabled end
+            if not extremeMode and self._fpsCache.Effects[obj] == nil then
+                self._fpsCache.Effects[obj] = obj.Enabled
+            end
             obj.Enabled = false
         end
     end)
 end
 
+-- Toggles map graphics to increase FPS
 function UniversalHex:SetAutoOptimizeFPS(enabled, extremeMode)
     if not enabled then
         self.Janitor:Remove("AutoFPS")
-        for obj, props in pairs(self._fpsCache) do
-            pcall(function()
-                if obj and obj.Parent then
-                    for propName, propValue in pairs(props) do obj[propName] = propValue end
-                end
-            end)
-        end
-        table.clear(self._fpsCache)
+        
+        -- Restore all cached properties
         pcall(function()
             Lighting.GlobalShadows = self._state.OriginalLighting.GlobalShadows
             Lighting.FogEnd = self._state.OriginalLighting.FogEnd
+            
+            for part, mat in pairs(self._fpsCache.Materials) do
+                if part and part.Parent then part.Material = mat end
+            end
+            for tex, parent in pairs(self._fpsCache.Textures) do
+                if tex then tex.Parent = parent end
+            end
+            for effect, state in pairs(self._fpsCache.Effects) do
+                if effect and effect.Parent then effect.Enabled = state end
+            end
         end)
-        self:_log("INFO", "Auto FPS Optimization disabled. Visuals restored.")
+        
+        table.clear(self._fpsCache.Materials)
+        table.clear(self._fpsCache.Textures)
+        table.clear(self._fpsCache.Effects)
+        
+        self:_log("INFO", "FPS Optimization disabled. Visuals restored.")
         return
     end
 
-    self:_log("INFO", "Auto FPS Optimization enabled. ExtremeMode: " .. tostring(extremeMode))
+    self:_log("INFO", "FPS Optimization enabled.")
     
     task.spawn(function()
         pcall(function()
             Lighting.GlobalShadows = false
             Lighting.FogEnd = 9e9
-            for _, obj in ipairs(workspace:GetDescendants()) do self:_applyOptimization(obj, extremeMode) end
+            for _, obj in ipairs(workspace:GetDescendants()) do 
+                self:_applyOptimization(obj, extremeMode) 
+            end
         end)
     end)
-    local connection = workspace.DescendantAdded:Connect(function(obj) self:_applyOptimization(obj, extremeMode) end)
+    
+    local connection = workspace.DescendantAdded:Connect(function(obj) 
+        self:_applyOptimization(obj, extremeMode) 
+    end)
+    
     self.Janitor:Add(connection, "Disconnect", "AutoFPS")
 end
 
@@ -514,6 +556,7 @@ function UniversalHex:RejoinServer()
     pcall(function() TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer) end)
 end
 
+-- Finds an active public server and teleports the user to it
 function UniversalHex:ServerHop()
     task.spawn(function()
         pcall(function()
@@ -550,8 +593,9 @@ function UniversalHex:GetFPS()
     return fps
 end
 
+-- Tears down the framework and releases all memory hooks
 function UniversalHex:Destroy()
-    self:_log("WARN", "Destroy invoked. Nuking UniversalHex from memory.")
+    self:_log("WARN", "Destroying UniversalHex environment.")
     self:SetSpeedEnabled(false)
     self:SetJumpPowerEnabled(false)
     self:SetNoclipEnabled(false)
