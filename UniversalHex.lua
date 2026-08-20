@@ -308,10 +308,13 @@ function UniversalHex:SetFullbrightEnabled(enabled)
     if not enabled then
         self.Janitor:Remove("FullbrightLoop")
         
+        -- Restaura as sombras e a escuridão nativa do jogo
         pcall(function()
             Lighting.Ambient = self._state.OriginalLighting.Ambient
+            Lighting.OutdoorAmbient = self._state.OriginalLighting.OutdoorAmbient
             Lighting.ColorShift_Bottom = self._state.OriginalLighting.ColorShift_Bottom
             Lighting.ColorShift_Top = self._state.OriginalLighting.ColorShift_Top
+            Lighting.GlobalShadows = self._state.OriginalLighting.GlobalShadows
         end)
         
         self:_log("INFO", "Fullbright disabled. Original lighting restored.")
@@ -320,15 +323,30 @@ function UniversalHex:SetFullbrightEnabled(enabled)
 
     self:_log("INFO", "Fullbright enabled.")
     
-    local connection = RunService.LightingChanged:Connect(function()
+    local branco = Color3.fromRGB(255, 255, 255)
+    
+    -- Aplica a claridade imediatamente
+    Lighting.Ambient = branco
+    Lighting.OutdoorAmbient = branco
+    Lighting.ColorShift_Bottom = branco
+    Lighting.ColorShift_Top = branco
+    Lighting.GlobalShadows = false
+    
+    -- Monitora mudanças no Lighting. Usamos "if" para evitar um Loop Infinito (Crash)
+    local connection = Lighting.Changed:Connect(function()
         pcall(function()
-            Lighting.Ambient = Color3.fromRGB(255, 255, 255)
-            Lighting.ColorShift_Bottom = Color3.fromRGB(255, 255, 255)
-            Lighting.ColorShift_Top = Color3.fromRGB(255, 255, 255)
+            if Lighting.Ambient ~= branco then
+                Lighting.Ambient = branco
+            end
+            if Lighting.OutdoorAmbient ~= branco then
+                Lighting.OutdoorAmbient = branco
+            end
+            if Lighting.GlobalShadows ~= false then
+                Lighting.GlobalShadows = false
+            end
         end)
     end)
     
-    Lighting.Ambient = Color3.fromRGB(255, 255, 255)
     self.Janitor:Add(connection, "Disconnect", "FullbrightLoop")
 end
 
