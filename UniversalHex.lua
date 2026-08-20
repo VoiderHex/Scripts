@@ -31,7 +31,7 @@ function UniversalHex.new(config)
         pcall(function()
             getgenv()[projectId]:Destroy()
         end)
-        task.wait(0.1) -- Yield briefly to allow the engine to clear visual instances
+        task.wait(0.1)
     end
     
     local self = setmetatable({}, UniversalHex)
@@ -42,36 +42,18 @@ function UniversalHex.new(config)
     
     -- Centralized state storage
     self._state = {
-        -- Visuals
-        EspEnabled = false,
-        EspColor = Color3.fromRGB(255, 0, 0),
-        EspStyle = "Highlight", 
-        EspTransparency = { Fill = 0.5, Outline = 0 },
-        EspDistanceLimit = 1000,
-        
-        -- Movement
-        SpeedEnabled = false,
         SpeedValue = 16,
-        JumpPowerEnabled = false,
         JumpPowerValue = 50,
-        NoclipEnabled = false,
-        InfiniteJumpEnabled = false,
-        
-        -- Utilities
-        AntiAfkEnabled = false,
-        
-        -- Environment Cache (stored for clean restoration)
-        OriginalLighting = {
-            Ambient = Lighting.Ambient,
-            ColorShift_Bottom = Lighting.ColorShift_Bottom,
-            ColorShift_Top = Lighting.ColorShift_Top
-        }
     }
     
-    -- Register the new instance in the global environment
-    getgenv()[projectId] = self
+    -- Dynamic ESP Registry
+    self._espGroups = {}
+    self._espCache = {}
+    self._espEngineRunning = false
     
+    getgenv()[projectId] = self
     self:_log("INFO", "Initialized successfully in " .. self.Mode .. " mode for project: " .. projectId)
+    
     return self
 end
 
@@ -94,8 +76,6 @@ function UniversalHex:_getChar()
 end
 
 -- UI Integration
-
--- Attaches the main UI instance (e.g., Rayfield window) to the Janitor for automatic cleanup
 function UniversalHex:AttachUI(uiInstance)
     if typeof(uiInstance) == "Instance" or type(uiInstance) == "table" then
         self.Janitor:Add(uiInstance, "Destroy", "Main_Rayfield_UI")
@@ -103,68 +83,149 @@ function UniversalHex:AttachUI(uiInstance)
     end
 end
 
--- Visuals & Debug Overlays
-
-function UniversalHex:SetEspEnabled(enabled)
-    self._state.EspEnabled = enabled
+-- DYNAMIC ESP ENGINE (Players & Parts)
+function UniversalHex:CreateEspGroup(groupName, groupType)
+    -- groupType should be "Players" or "Parts"
+    groupType = groupType or "Players"
     
-    if not enabled then
-        self.Janitor:Remove("EspFolder")
-        self.Janitor:Remove("EspLoop")
-        self:_log("INFO", "ESP system disabled and cleaned up.")
-        return
+    local group = {
+        Name = groupName,
+        Type = groupType,
+        Color = Color3.fromRGB(255, 255, 255),
+        Enabled = true,
+        Filter = function() return true end,
+        PartsList = {}, -- Only used for "Parts"
+        Highlight = { Enabled = true, Fill = 0.5, Outline = 0 }
+    }
+    
+    -- Chaining Methods for Developer ease
+    function group:SetColor(c) self.Color = c; return self end
+    function group:SetFilter(f) self.Filter = f; return self end
+    function group:SetEnabled(e) self.Enabled = e; return self end
+    function group:SetPartsList(list) self.PartsList = list; return self end
+    function group:EnableHighlight(enabled, fill, outline)
+        self.Highlight.Enabled = enabled
+        if fill then self.Highlight.Fill = fill end
+        if outline then self.Highlight.Outline = outline end
+        return self
     end
+    
+    self._espGroups[groupName] = group
+    self._espCache[groupName] = {}
+    
+    self:_startEspEngine()
+    
+    return group
+end
 
-    self:_log("INFO", "ESP system enabled. Setting up rendering loop.")
+function UniversalHex:_startEspEngine()
+    if self._espEngineRunning then return end
+    self._espEngineRunning = true
     
     local espFolder = Instance.new("Folder")
     espFolder.Name = "UniversalHex_ESP"
-    
     pcall(function()
-        if gethui then
-            espFolder.Parent = gethui()
-        else
-            espFolder.Parent = CoreGui
-        end
+        if gethui then espFolder.Parent = gethui() else espFolder.Parent = CoreGui end
     end)
-    
     self.Janitor:Add(espFolder, "Destroy", "EspFolder")
     
     local connection = RunService.RenderStepped:Connect(function()
+        for groupName, group in pairs(self._espGroups) do
+            local currentCache = self._espCache[groupName]
+            
+            -- If group is disabled, clear its cache visually
+            if not group.Enabled then
+                for inst, highlight in pairs(currentCache) do
+                    highlight:Destroy()
+                end
+                table.clear(currentCache)
+                continue
+            end
+            
+            local validInstances = {}
+            
+            -- 1. Validate based on Type
+            if group.Type == "Players" then
+                for _, player in ipairs(Players:GetPlayers()) do
+                    -- Strict validation: Real player, alive, with a valid HumanoidRootPart
+                    if player ~= LocalPlayer and player.Character then
+                        local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+                        local hum = player.Character:FindFirstChildOfClass("Humanoid")
+                        
+                        if hrp and hum and hum.Health > 0 and group.Filter(player) then
+                            validInstances[player.Character] = true
+                        end
+                    end
+                end
+            elseif group.Type == "Parts" then
+                for _, part in ipairs(group.PartsList) do
+                    -- Strict validation: Exists in workspace and passes dev filter
+                    if part and part.Parent and part:IsA("BasePart") and group.Filter(part) then
+                        validInstances[part] = true
+                    end
+                end
+            end
+            
+            -- 2. Clean up dead/removed targets from Cache
+            for inst, highlight in pairs(currentCache) do
+                if not validInstances[inst] or not inst.Parent then
+                    highlight:Destroy()
+                    currentCache[inst] = nil
+                end
+            end
+            
+            -- 3. Render/Update valid targets
+            for inst, _ in pairs(validInstances) do
+                local highlight = currentCache[inst]
+                
+                -- Create if not exists
+                if not highlight then
+                    highlight = Instance.new("Highlight")
+                    highlight.Name = "ESP_" .. groupName
+                    highlight.Parent = espFolder
+                    highlight.Adornee = inst
+                    currentCache[inst] = highlight
+                end
+                
+                -- Update properties
+                if group.Highlight.Enabled then
+                    highlight.Enabled = true
+                    highlight.FillColor = group.Color
+                    highlight.OutlineColor = group.Color
+                    highlight.FillTransparency = group.Highlight.Fill
+                    highlight.OutlineTransparency = group.Highlight.Outline
+                else
+                    highlight.Enabled = false
+                end
+            end
+        end
+    end)
+    
+    self.Janitor:Add(connection, "Disconnect", "EspEngineLoop")
+end
+
+-- COMBAT: FLING & ANTI-FLING (Optimized)
+function UniversalHex:SetAntiFlingEnabled(enabled)
+    if not enabled then
+        self.Janitor:Remove("AntiFlingLoop")
+        self:_log("INFO", "Anti-Fling disabled.")
+        return
+    end
+
+    self:_log("INFO", "Anti-Fling enabled. Isolating collisions from aggressive players.")
+    
+    -- Uses Stepped because it runs right before Physics calculations
+    local connection = RunService.Stepped:Connect(function()
         pcall(function()
-            local localChar, localHrp, _ = self:_getChar()
-            if not localHrp then return end
+            local localChar, _, _ = self:_getChar()
+            if not localChar then return end
             
             for _, player in ipairs(Players:GetPlayers()) do
                 if player ~= LocalPlayer and player.Character then
-                    local targetHrp = player.Character:FindFirstChild("HumanoidRootPart")
-                    
-                    if targetHrp then
-                        local distance = (localHrp.Position - targetHrp.Position).Magnitude
-                        local objectName = "ESP_" .. player.Name
-                        local existingEsp = espFolder:FindFirstChild(objectName)
-                        
-                        if distance <= self._state.EspDistanceLimit and player.Character:FindFirstChild("Humanoid") and player.Character.Humanoid.Health > 0 then
-                            
-                            if self._state.EspStyle == "Highlight" then
-                                if not existingEsp or not existingEsp:IsA("Highlight") then
-                                    if existingEsp then existingEsp:Destroy() end
-                                    local highlight = Instance.new("Highlight")
-                                    highlight.Name = objectName
-                                    highlight.Parent = espFolder
-                                    highlight.Adornee = player.Character
-                                    existingEsp = highlight
-                                end
-                                
-                                existingEsp.FillColor = self._state.EspColor
-                                existingEsp.OutlineColor = self._state.EspColor
-                                existingEsp.FillTransparency = self._state.EspTransparency.Fill
-                                existingEsp.OutlineTransparency = self._state.EspTransparency.Outline
-                            end
-                        else
-                            if existingEsp then
-                                existingEsp:Destroy()
-                            end
+                    for _, part in ipairs(player.Character:GetDescendants()) do
+                        if part:IsA("BasePart") then
+                            -- Removes collision between our local player and everyone else
+                            part.CanCollide = false
                         end
                     end
                 end
@@ -172,51 +233,59 @@ function UniversalHex:SetEspEnabled(enabled)
         end)
     end)
     
-    self.Janitor:Add(connection, "Disconnect", "EspLoop")
+    self.Janitor:Add(connection, "Disconnect", "AntiFlingLoop")
 end
 
-function UniversalHex:SetEspColor(color)
-    self._state.EspColor = color
-    self:_log("INFO", "ESP Color updated.")
-end
-
-function UniversalHex:SetEspStyle(style)
-    self._state.EspStyle = style
-    self:_log("INFO", "ESP Style updated to: " .. style)
-    
-    if self._state.EspEnabled then
-        self:SetEspEnabled(false)
-        task.wait()
-        self:SetEspEnabled(true)
-    end
-end
-
-function UniversalHex:SetEspTransparency(fill, outline)
-    self._state.EspTransparency.Fill = fill
-    self._state.EspTransparency.Outline = outline
-end
-
-function UniversalHex:SetEspDistanceLimit(maxDistance)
-    self._state.EspDistanceLimit = maxDistance
-end
-
--- Character & Movement Controls
-
-function UniversalHex:SetSpeedEnabled(enabled)
-    self._state.SpeedEnabled = enabled
+function UniversalHex:SetFlingActivate(enabled, targetPlayer)
     if not enabled then
-        self.Janitor:Remove("SpeedLoop")
-        self:_log("INFO", "Speed modifier disabled.")
+        self.Janitor:Remove("FlingLoop")
+        self:_log("INFO", "Fling deactivated.")
+        
+        -- Restore Physics safely
+        pcall(function()
+            local _, hrp, _ = self:_getChar()
+            if hrp then
+                hrp.Velocity = Vector3.zero
+                hrp.RotVelocity = Vector3.zero
+            end
+        end)
         return
     end
 
-    self:_log("INFO", "Speed modifier enabled.")
+    self:_log("INFO", "Fling activated.")
+    
+    -- Heartbeat is ideal for enforcing velocity consistently
+    local connection = RunService.Heartbeat:Connect(function()
+        pcall(function()
+            local _, hrp, hum = self:_getChar()
+            if not hrp or not hum or hum.Health <= 0 then return end
+            
+            -- Core Fling Math (Spinning angular velocity)
+            hrp.RotVelocity = Vector3.new(20000, 20000, 20000)
+            
+            -- If target is provided, glue our character to them
+            if targetPlayer and targetPlayer.Character then
+                local targetHrp = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+                if targetHrp then
+                    hrp.CFrame = targetHrp.CFrame
+                end
+            end
+        end)
+    end)
+    
+    self.Janitor:Add(connection, "Disconnect", "FlingLoop")
+end
+
+-- CHARACTER & MOVEMENT CONTROLS
+function UniversalHex:SetSpeedEnabled(enabled)
+    if not enabled then
+        self.Janitor:Remove("SpeedLoop")
+        return
+    end
     local connection = RunService.Stepped:Connect(function()
         pcall(function()
             local _, _, hum = self:_getChar()
-            if hum and hum.Health > 0 then
-                hum.WalkSpeed = self._state.SpeedValue
-            end
+            if hum and hum.Health > 0 then hum.WalkSpeed = self._state.SpeedValue end
         end)
     end)
     self.Janitor:Add(connection, "Disconnect", "SpeedLoop")
@@ -227,14 +296,10 @@ function UniversalHex:SetSpeedValue(speed)
 end
 
 function UniversalHex:SetJumpPowerEnabled(enabled)
-    self._state.JumpPowerEnabled = enabled
     if not enabled then
         self.Janitor:Remove("JumpLoop")
-        self:_log("INFO", "Jump power modifier disabled.")
         return
     end
-
-    self:_log("INFO", "Jump power modifier enabled.")
     local connection = RunService.Stepped:Connect(function()
         pcall(function()
             local _, _, hum = self:_getChar()
@@ -252,14 +317,10 @@ function UniversalHex:SetJumpPowerValue(power)
 end
 
 function UniversalHex:SetNoclipEnabled(enabled)
-    self._state.NoclipEnabled = enabled
     if not enabled then
         self.Janitor:Remove("NoclipLoop")
-        self:_log("INFO", "Noclip disabled.")
         return
     end
-
-    self:_log("INFO", "Noclip enabled.")
     local connection = RunService.Stepped:Connect(function()
         pcall(function()
             local char = LocalPlayer.Character
@@ -276,178 +337,104 @@ function UniversalHex:SetNoclipEnabled(enabled)
 end
 
 function UniversalHex:SetInfiniteJumpEnabled(enabled)
-    self._state.InfiniteJumpEnabled = enabled
     if not enabled then
         self.Janitor:Remove("InfJumpConnection")
-        self:_log("INFO", "Infinite Jump disabled.")
         return
     end
-    
-    self:_log("INFO", "Infinite Jump enabled.")
     local connection = UserInputService.JumpRequest:Connect(function()
         pcall(function()
             local _, _, hum = self:_getChar()
-            if hum and hum.Health > 0 then
-                hum:ChangeState(Enum.HumanoidStateType.Jumping)
-            end
+            if hum and hum.Health > 0 then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
         end)
     end)
     self.Janitor:Add(connection, "Disconnect", "InfJumpConnection")
-end
-
--- Camera & Environment Utilities
-
-function UniversalHex:SetFovValue(fov)
-    pcall(function()
-        Camera.FieldOfView = fov
-        self:_log("INFO", "Field of View updated to: " .. tostring(fov))
-    end)
-end
-
-function UniversalHex:SetFullbrightEnabled(enabled)
-    if not enabled then
-        self.Janitor:Remove("FullbrightLoop")
-        
-        -- Restaura as sombras e a escuridão nativa do jogo
-        pcall(function()
-            Lighting.Ambient = self._state.OriginalLighting.Ambient
-            Lighting.OutdoorAmbient = self._state.OriginalLighting.OutdoorAmbient
-            Lighting.ColorShift_Bottom = self._state.OriginalLighting.ColorShift_Bottom
-            Lighting.ColorShift_Top = self._state.OriginalLighting.ColorShift_Top
-            Lighting.GlobalShadows = self._state.OriginalLighting.GlobalShadows
-        end)
-        
-        self:_log("INFO", "Fullbright disabled. Original lighting restored.")
-        return
-    end
-
-    self:_log("INFO", "Fullbright enabled.")
-    
-    local branco = Color3.fromRGB(255, 255, 255)
-    
-    -- Aplica a claridade imediatamente
-    Lighting.Ambient = branco
-    Lighting.OutdoorAmbient = branco
-    Lighting.ColorShift_Bottom = branco
-    Lighting.ColorShift_Top = branco
-    Lighting.GlobalShadows = false
-    
-    -- Monitora mudanças no Lighting. Usamos "if" para evitar um Loop Infinito (Crash)
-    local connection = Lighting.Changed:Connect(function()
-        pcall(function()
-            if Lighting.Ambient ~= branco then
-                Lighting.Ambient = branco
-            end
-            if Lighting.OutdoorAmbient ~= branco then
-                Lighting.OutdoorAmbient = branco
-            end
-            if Lighting.GlobalShadows ~= false then
-                Lighting.GlobalShadows = false
-            end
-        end)
-    end)
-    
-    self.Janitor:Add(connection, "Disconnect", "FullbrightLoop")
 end
 
 function UniversalHex:TeleportToCFrame(targetCFrame, smooth)
     pcall(function()
         local char, hrp, _ = self:_getChar()
         if not char or not hrp then return end
-        
         if smooth then
-            self:_log("INFO", "Executing smooth teleport.")
-            local tweenInfo = TweenInfo.new(1, Enum.EasingStyle.Linear)
-            local tween = TweenService:Create(hrp, tweenInfo, {CFrame = targetCFrame})
+            local tween = TweenService:Create(hrp, TweenInfo.new(1, Enum.EasingStyle.Linear), {CFrame = targetCFrame})
             tween:Play()
         else
-            self:_log("INFO", "Executing direct teleport.")
             char:PivotTo(targetCFrame)
         end
     end)
 end
 
--- Utility & Network Controls
-
+-- UTILITY & NETWORK CONTROLS
 function UniversalHex:SetAntiAfkEnabled(enabled)
-    self._state.AntiAfkEnabled = enabled
-    
     if not enabled then
         self.Janitor:Remove("AntiAfkConnection")
-        self:_log("INFO", "Anti-AFK disabled.")
         return
     end
-
-    self:_log("INFO", "Anti-AFK enabled. Preventing idle disconnects.")
-    
     local connection = LocalPlayer.Idled:Connect(function()
         pcall(function()
             VirtualUser:CaptureController()
             VirtualUser:ClickButton2(Vector2.new())
-            self:_log("INFO", "Anti-AFK triggered to prevent timeout.")
         end)
     end)
-    
     self.Janitor:Add(connection, "Disconnect", "AntiAfkConnection")
 end
 
-function UniversalHex:OptimizeFPS()
-    self:_log("WARN", "Executing FPS Optimization. Visual fidelity will be reduced.")
+function UniversalHex:_applyOptimization(obj)
+    pcall(function()
+        if obj:IsA("BasePart") then
+            obj.Material = Enum.Material.SmoothPlastic
+            obj.Reflectance = 0
+            obj.CastShadow = false
+        elseif obj:IsA("Decal") or obj:IsA("Texture") then
+            obj.Transparency = 1
+        elseif obj:IsA("PostEffect") or obj:IsA("Atmosphere") or obj:IsA("Clouds") or obj:IsA("ParticleEmitter") or obj:IsA("Trail") then
+            obj.Enabled = false
+        end
+    end)
+end
+
+function UniversalHex:SetAutoOptimizeFPS(enabled)
+    if not enabled then
+        self.Janitor:Remove("AutoFPS")
+        self:_log("INFO", "Auto FPS Optimization disabled.")
+        return
+    end
+
+    self:_log("INFO", "Auto FPS Optimization enabled. Monitoring workspace.")
     
+    -- Optimize existing objects on a separate thread to prevent freezing
     task.spawn(function()
         pcall(function()
             Lighting.GlobalShadows = false
             Lighting.FogEnd = 9e9
             Lighting.ShadowSoftness = 0
-            
-            if sethiddenproperty then
-                pcall(function() sethiddenproperty(Lighting, "Technology", 2) end)
-            end
+            if sethiddenproperty then pcall(function() sethiddenproperty(Lighting, "Technology", 2) end) end
 
             for _, obj in ipairs(workspace:GetDescendants()) do
-                if obj:IsA("BasePart") then
-                    obj.Material = Enum.Material.SmoothPlastic
-                    obj.Reflectance = 0
-                    obj.CastShadow = false
-                elseif obj:IsA("Decal") or obj:IsA("Texture") then
-                    obj.Transparency = 1
-                elseif obj:IsA("PostEffect") or obj:IsA("Atmosphere") or obj:IsA("Clouds") then
-                    obj.Enabled = false
-                elseif obj:IsA("ParticleEmitter") or obj:IsA("Trail") then
-                    obj.Enabled = false
-                end
+                self:_applyOptimization(obj)
             end
-            
-            self:_log("INFO", "FPS Optimization completed.")
         end)
     end)
+    
+    -- Hook for any new objects spawned by the game later
+    local connection = workspace.DescendantAdded:Connect(function(obj)
+        self:_applyOptimization(obj)
+    end)
+    
+    self.Janitor:Add(connection, "Disconnect", "AutoFPS")
 end
 
 function UniversalHex:RejoinServer()
-    self:_log("INFO", "Initiating server rejoin sequence.")
-    pcall(function()
-        TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
-    end)
+    pcall(function() TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer) end)
 end
 
 function UniversalHex:ServerHop()
-    self:_log("INFO", "Initiating server hop sequence. Searching for optimal servers...")
-    
     task.spawn(function()
         pcall(function()
             local serversApi = "https://games.roblox.com/v1/games/" .. tostring(game.PlaceId) .. "/servers/Public?sortOrder=Asc&limit=100"
             local requestFunc = syn and syn.request or request or http_request or fluxus and fluxus.request
+            if not requestFunc then return end
             
-            if not requestFunc then
-                self:_log("ERROR", "Executor does not support HTTP requests required for Server Hop.")
-                return
-            end
-            
-            local response = requestFunc({
-                Url = serversApi,
-                Method = "GET"
-            })
-            
+            local response = requestFunc({ Url = serversApi, Method = "GET" })
             if response.StatusCode == 200 then
                 local data = HttpService:JSONDecode(response.Body)
                 local availableServers = {}
@@ -460,13 +447,8 @@ function UniversalHex:ServerHop()
                 
                 if #availableServers > 0 then
                     local randomServer = availableServers[math.random(1, #availableServers)]
-                    self:_log("INFO", "Found available server. Teleporting...")
                     TeleportService:TeleportToPlaceInstance(game.PlaceId, randomServer, LocalPlayer)
-                else
-                    self:_log("WARN", "No suitable servers found for hopping.")
                 end
-            else
-                self:_log("ERROR", "Failed to fetch server list. HTTP Status: " .. tostring(response.StatusCode))
             end
         end)
     end)
@@ -483,35 +465,34 @@ end
 
 function UniversalHex:GetFPS()
     local fps = 0
-    pcall(function()
-        fps = math.floor(workspace:GetRealPhysicsFPS())
-    end)
+    pcall(function() fps = math.floor(workspace:GetRealPhysicsFPS()) end)
     return fps
 end
 
--- Lifecycle & State Management
-
+-- LIFECYCLE & STATE MANAGEMENT
 function UniversalHex:ResetAll()
-    self:_log("WARN", "ResetAll invoked. Returning character and environment to default states.")
-    
-    self:SetEspEnabled(false)
     self:SetSpeedEnabled(false)
     self:SetJumpPowerEnabled(false)
     self:SetNoclipEnabled(false)
     self:SetInfiniteJumpEnabled(false)
-    self:SetFullbrightEnabled(false)
     self:SetAntiAfkEnabled(false)
-    self:SetFovValue(70)
+    self:SetFlingActivate(false)
+    self:SetAntiFlingEnabled(false)
+    self:SetAutoOptimizeFPS(false)
+    
+    -- Disable all dynamic ESP groups
+    for _, group in pairs(self._espGroups) do
+        group:SetEnabled(false)
+    end
 end
 
 function UniversalHex:Destroy()
     self:_log("WARN", "Destroy invoked. Nuking UniversalHex from memory.")
-    
     self:ResetAll()
     self.Janitor:Destroy()
     table.clear(self._state)
+    table.clear(self._espGroups)
     
-    -- Remove from global environment
     if getgenv()[self.ProjectId] == self then
         getgenv()[self.ProjectId] = nil
     end
