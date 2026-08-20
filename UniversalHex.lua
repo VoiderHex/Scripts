@@ -27,7 +27,6 @@ function UniversalHex.new(config)
     config = config or {}
     local projectId = config.ProjectId or "UniversalHex_Default"
     
-    -- Prevent duplicate instances from running in the same project
     if getgenv()[projectId] then
         pcall(function() getgenv()[projectId]:Destroy() end)
         task.wait(0.1)
@@ -39,7 +38,6 @@ function UniversalHex.new(config)
     self.ProjectId = projectId
     self.Janitor = Janitor.new()
     
-    -- Stores default states so we can revert them later if needed
     self._state = {
         SpeedValue = 16,
         JumpPowerValue = 50,
@@ -54,7 +52,6 @@ function UniversalHex.new(config)
     self._espCache = {}
     self._espEngineRunning = false
     
-    -- Cache for FPS optimization to restore textures and materials
     self._fpsCache = {
         Materials = {},
         Textures = {},
@@ -90,10 +87,7 @@ function UniversalHex:AttachUI(uiInstance)
     end
 end
 
---// =======================================================
---// DYNAMIC ESP ENGINE
---// =======================================================
-
+-- Dynamic ESP Engine
 function UniversalHex:CreateEspGroup(groupName, groupType)
     groupType = groupType or "Players"
     
@@ -140,7 +134,6 @@ function UniversalHex:_startEspEngine()
         for groupName, group in pairs(self._espGroups) do
             local currentCache = self._espCache[groupName]
             
-            -- Clear highlights if the group is disabled
             if not group.Enabled then
                 for inst, highlight in pairs(currentCache) do highlight:Destroy() end
                 table.clear(currentCache)
@@ -167,7 +160,6 @@ function UniversalHex:_startEspEngine()
                 end
             end
             
-            -- Remove highlights for instances that are no longer valid
             for inst, highlight in pairs(currentCache) do
                 if not validInstances[inst] or not inst.Parent then
                     highlight:Destroy()
@@ -175,7 +167,6 @@ function UniversalHex:_startEspEngine()
                 end
             end
             
-            -- Create or update highlights for valid instances
             for inst, _ in pairs(validInstances) do
                 local highlight = currentCache[inst]
                 if not highlight then
@@ -202,11 +193,9 @@ function UniversalHex:_startEspEngine()
     self.Janitor:Add(connection, "Disconnect", "EspEngineLoop")
 end
 
---// =======================================================
---// COMBAT & DEFENSE
---// =======================================================
+-- Combat and Defense Functions
 
--- Protects the user from being flung by other players by stripping collisions and freezing angular velocity
+-- Protects the user from being flung with high-performance proximity checks
 function UniversalHex:SetAntiFlingEnabled(enabled)
     if not enabled then
         self.Janitor:Remove("AntiFlingLoop")
@@ -214,27 +203,34 @@ function UniversalHex:SetAntiFlingEnabled(enabled)
     end
     
     local connection = RunService.Stepped:Connect(function()
-        pcall(function()
-            local localChar, hrp, _ = self:GetCharacter()
-            if not localChar then return end
-            
-            -- Kill unexpected intense velocities on our character
-            if hrp and (hrp.AssemblyAngularVelocity.Magnitude > 50 or hrp.AssemblyLinearVelocity.Magnitude > 200) then
-                hrp.AssemblyAngularVelocity = Vector3.zero
-                hrp.AssemblyLinearVelocity = Vector3.zero
-            end
-            
-            -- Disable collisions with other players
-            for _, player in ipairs(Players:GetPlayers()) do
-                if player ~= LocalPlayer and player.Character then
-                    for _, part in ipairs(player.Character:GetDescendants()) do
-                        if part:IsA("BasePart") and part.CanCollide then
-                            part.CanCollide = false
+        local localChar, hrp, _ = self:GetCharacter()
+        if not localChar or not hrp then return end
+        
+        -- Kill unexpected intense velocities on our character immediately
+        if hrp.AssemblyAngularVelocity.Magnitude > 50 or hrp.AssemblyLinearVelocity.Magnitude > 250 then
+            hrp.AssemblyAngularVelocity = Vector3.zero
+            hrp.AssemblyLinearVelocity = Vector3.zero
+        end
+        
+        local myPos = hrp.Position
+        
+        -- Heavily optimized loop: only process players within 25 studs radius
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer then
+                local char = player.Character
+                if char then
+                    local targetHrp = char:FindFirstChild("HumanoidRootPart")
+                    if targetHrp and (targetHrp.Position - myPos).Magnitude < 25 then
+                        -- Use GetChildren instead of GetDescendants to prevent severe memory leaks
+                        for _, part in ipairs(char:GetChildren()) do
+                            if part:IsA("BasePart") and part.CanCollide then
+                                part.CanCollide = false
+                            end
                         end
                     end
                 end
             end
-        end)
+        end
     end)
     self.Janitor:Add(connection, "Disconnect", "AntiFlingLoop")
 end
@@ -258,10 +254,8 @@ function UniversalHex:SetFlingActivate(enabled, targetPlayer)
             local _, hrp, hum = self:GetCharacter()
             if not hrp or not hum or hum.Health <= 0 then return end
             
-            -- Spin the character at extreme speeds
             hrp.RotVelocity = Vector3.new(20000, 20000, 20000)
             
-            -- Stick to target
             if targetPlayer and targetPlayer.Character then
                 local targetHrp = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
                 if targetHrp then
@@ -273,9 +267,7 @@ function UniversalHex:SetFlingActivate(enabled, targetPlayer)
     self.Janitor:Add(connection, "Disconnect", "FlingLoop")
 end
 
---// =======================================================
---// MOVEMENT, FLY & KINEMATICS
---// =======================================================
+-- Movement, Fly & Kinematics
 
 function UniversalHex:SetSpeedEnabled(enabled)
     if not enabled then self.Janitor:Remove("SpeedLoop") return end
@@ -406,9 +398,7 @@ function UniversalHex:SetFlyEnabled(enabled)
     end), "Disconnect", "FlyLoop")
 end
 
---// =======================================================
---// WORLD & TELEPORT UTILITIES
---// =======================================================
+-- World and Teleport Utilities
 
 function UniversalHex:Teleport(targetCFrame)
     local char, hrp, _ = self:GetCharacter()
@@ -473,9 +463,7 @@ function UniversalHex:TouchPart(part)
     return false
 end
 
---// =======================================================
---// SYSTEM & NETWORK CONTROLS
---// =======================================================
+-- System and Network Controls
 
 function UniversalHex:SetAntiAfkEnabled(enabled)
     if not enabled then self.Janitor:Remove("AntiAfkConnection") return end
@@ -500,7 +488,6 @@ function UniversalHex:_applyOptimization(obj, extremeMode)
             obj.CastShadow = false
             
         elseif obj:IsA("Decal") or obj:IsA("Texture") then
-            -- Properly unparenting textures usually gives better performance than transparency
             if not extremeMode and self._fpsCache.Textures[obj] == nil then
                 self._fpsCache.Textures[obj] = obj.Parent
             end
@@ -520,7 +507,6 @@ function UniversalHex:SetAutoOptimizeFPS(enabled, extremeMode)
     if not enabled then
         self.Janitor:Remove("AutoFPS")
         
-        -- Restore all cached properties
         pcall(function()
             Lighting.GlobalShadows = self._state.OriginalLighting.GlobalShadows
             Lighting.FogEnd = self._state.OriginalLighting.FogEnd
@@ -563,10 +549,9 @@ function UniversalHex:SetAutoOptimizeFPS(enabled, extremeMode)
     self.Janitor:Add(connection, "Disconnect", "AutoFPS")
 end
 
--- Safely rejoins the server with a fallback to avoid "Cannot teleport to empty instance id" warning
+-- Safely rejoins the server with a fallback
 function UniversalHex:RejoinServer()
     local success, err = pcall(function()
-        -- Ensure game.JobId exists. If empty, fallback to simple place teleport.
         if game.JobId == "" or #Players:GetPlayers() <= 1 then
             TeleportService:Teleport(game.PlaceId, LocalPlayer)
         else
@@ -601,7 +586,6 @@ function UniversalHex:ServerHop()
                     local availableServers = {}
                     for _, server in ipairs(data.data) do
                         if type(server) == "table" and server.playing and server.maxPlayers and server.id then
-                            -- Critical: Ensure server.id is not empty before validating
                             if server.id ~= "" and server.playing < (server.maxPlayers - 1) and server.id ~= game.JobId then
                                 table.insert(availableServers, server.id)
                             end
@@ -619,7 +603,6 @@ function UniversalHex:ServerHop()
             end
         end
         
-        -- Fallback if HTTP request fails, returns empty IDs, or no valid servers are found
         self:_log("WARN", "HTTP request failed or no valid server IDs found. Using native Teleport fallback.")
         pcall(function()
             TeleportService:Teleport(game.PlaceId, LocalPlayer)
