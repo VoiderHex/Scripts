@@ -90,7 +90,10 @@ function UniversalHex:AttachUI(uiInstance)
     end
 end
 
--- Dynamic ESP Engine
+--// =======================================================
+--// DYNAMIC ESP ENGINE
+--// =======================================================
+
 function UniversalHex:CreateEspGroup(groupName, groupType)
     groupType = groupType or "Players"
     
@@ -199,7 +202,9 @@ function UniversalHex:_startEspEngine()
     self.Janitor:Add(connection, "Disconnect", "EspEngineLoop")
 end
 
--- Combat and Defense Functions
+--// =======================================================
+--// COMBAT & DEFENSE
+--// =======================================================
 
 -- Protects the user from being flung by other players by stripping collisions and freezing angular velocity
 function UniversalHex:SetAntiFlingEnabled(enabled)
@@ -268,7 +273,9 @@ function UniversalHex:SetFlingActivate(enabled, targetPlayer)
     self.Janitor:Add(connection, "Disconnect", "FlingLoop")
 end
 
--- Movement, Fly & Kinematics
+--// =======================================================
+--// MOVEMENT, FLY & KINEMATICS
+--// =======================================================
 
 function UniversalHex:SetSpeedEnabled(enabled)
     if not enabled then self.Janitor:Remove("SpeedLoop") return end
@@ -399,7 +406,9 @@ function UniversalHex:SetFlyEnabled(enabled)
     end), "Disconnect", "FlyLoop")
 end
 
--- World and Teleport Utilities
+--// =======================================================
+--// WORLD & TELEPORT UTILITIES
+--// =======================================================
 
 function UniversalHex:Teleport(targetCFrame)
     local char, hrp, _ = self:GetCharacter()
@@ -464,7 +473,9 @@ function UniversalHex:TouchPart(part)
     return false
 end
 
--- System and Network Controls
+--// =======================================================
+--// SYSTEM & NETWORK CONTROLS
+--// =======================================================
 
 function UniversalHex:SetAntiAfkEnabled(enabled)
     if not enabled then self.Janitor:Remove("AntiAfkConnection") return end
@@ -552,31 +563,67 @@ function UniversalHex:SetAutoOptimizeFPS(enabled, extremeMode)
     self.Janitor:Add(connection, "Disconnect", "AutoFPS")
 end
 
+-- Safely rejoins the server with a fallback loop to prevent errors on dead instances
 function UniversalHex:RejoinServer()
-    pcall(function() TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer) end)
+    local success, err = pcall(function()
+        if #Players:GetPlayers() <= 1 then
+            LocalPlayer:Kick("\nRejoining...")
+            task.wait()
+            TeleportService:Teleport(game.PlaceId, LocalPlayer)
+        else
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
+        end
+    end)
+    
+    if not success then
+        self:_log("WARN", "Rejoin failed or blocked by executor: " .. tostring(err))
+    end
 end
 
--- Finds an active public server and teleports the user to it
+-- Finds an active public server and teleports the user to it safely
 function UniversalHex:ServerHop()
     task.spawn(function()
-        pcall(function()
-            local serversApi = "https://games.roblox.com/v1/games/" .. tostring(game.PlaceId) .. "/servers/Public?sortOrder=Desc&limit=100"
-            local requestFunc = (getgenv and getgenv().request) or request or http_request or (syn and syn.request)
-            if not requestFunc then return end
+        local requestFunc = (getgenv and getgenv().request) or request or http_request or (syn and syn.request)
+        
+        if requestFunc then
+            local success, response = pcall(function()
+                return requestFunc({
+                    Url = "https://games.roblox.com/v1/games/" .. tostring(game.PlaceId) .. "/servers/Public?sortOrder=Desc&limit=100",
+                    Method = "GET"
+                })
+            end)
             
-            local response = requestFunc({ Url = serversApi, Method = "GET" })
-            if response.StatusCode == 200 then
-                local data = HttpService:JSONDecode(response.Body)
-                local availableServers = {}
-                for _, server in ipairs(data.data) do
-                    if server.playing < server.maxPlayers and server.id ~= game.JobId then
-                        table.insert(availableServers, server.id)
+            if success and response and response.Body then
+                local decodeSuccess, data = pcall(function()
+                    return HttpService:JSONDecode(response.Body)
+                end)
+                
+                if decodeSuccess and data and data.data then
+                    local availableServers = {}
+                    for _, server in ipairs(data.data) do
+                        if type(server) == "table" and server.playing and server.maxPlayers then
+                            -- Leave at least 1 slot open to avoid getting stuck
+                            if server.playing < (server.maxPlayers - 1) and server.id ~= game.JobId then
+                                table.insert(availableServers, server.id)
+                            end
+                        end
+                    end
+                    
+                    if #availableServers > 0 then
+                        local randomServer = availableServers[math.random(1, #availableServers)]
+                        pcall(function()
+                            TeleportService:TeleportToPlaceInstance(game.PlaceId, randomServer, LocalPlayer)
+                        end)
+                        return
                     end
                 end
-                if #availableServers > 0 then
-                    TeleportService:TeleportToPlaceInstance(game.PlaceId, availableServers[math.random(1, #availableServers)], LocalPlayer)
-                end
             end
+        end
+        
+        -- Fallback if HTTP request fails or no servers found
+        self:_log("WARN", "HTTP request failed or no servers found. Using native Teleport fallback.")
+        pcall(function()
+            TeleportService:Teleport(game.PlaceId, LocalPlayer)
         end)
     end)
 end
