@@ -563,12 +563,11 @@ function UniversalHex:SetAutoOptimizeFPS(enabled, extremeMode)
     self.Janitor:Add(connection, "Disconnect", "AutoFPS")
 end
 
--- Safely rejoins the server with a fallback loop to prevent errors on dead instances
+-- Safely rejoins the server with a fallback to avoid "Cannot teleport to empty instance id" warning
 function UniversalHex:RejoinServer()
     local success, err = pcall(function()
-        if #Players:GetPlayers() <= 1 then
-            LocalPlayer:Kick("\nRejoining...")
-            task.wait()
+        -- Ensure game.JobId exists. If empty, fallback to simple place teleport.
+        if game.JobId == "" or #Players:GetPlayers() <= 1 then
             TeleportService:Teleport(game.PlaceId, LocalPlayer)
         else
             TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
@@ -580,7 +579,7 @@ function UniversalHex:RejoinServer()
     end
 end
 
--- Finds an active public server and teleports the user to it safely
+-- Finds an active public server and teleports the user to it securely
 function UniversalHex:ServerHop()
     task.spawn(function()
         local requestFunc = (getgenv and getgenv().request) or request or http_request or (syn and syn.request)
@@ -601,9 +600,9 @@ function UniversalHex:ServerHop()
                 if decodeSuccess and data and data.data then
                     local availableServers = {}
                     for _, server in ipairs(data.data) do
-                        if type(server) == "table" and server.playing and server.maxPlayers then
-                            -- Leave at least 1 slot open to avoid getting stuck
-                            if server.playing < (server.maxPlayers - 1) and server.id ~= game.JobId then
+                        if type(server) == "table" and server.playing and server.maxPlayers and server.id then
+                            -- Critical: Ensure server.id is not empty before validating
+                            if server.id ~= "" and server.playing < (server.maxPlayers - 1) and server.id ~= game.JobId then
                                 table.insert(availableServers, server.id)
                             end
                         end
@@ -620,8 +619,8 @@ function UniversalHex:ServerHop()
             end
         end
         
-        -- Fallback if HTTP request fails or no servers found
-        self:_log("WARN", "HTTP request failed or no servers found. Using native Teleport fallback.")
+        -- Fallback if HTTP request fails, returns empty IDs, or no valid servers are found
+        self:_log("WARN", "HTTP request failed or no valid server IDs found. Using native Teleport fallback.")
         pcall(function()
             TeleportService:Teleport(game.PlaceId, LocalPlayer)
         end)
