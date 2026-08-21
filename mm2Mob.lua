@@ -69,26 +69,15 @@ local function NotifyAlert(title, content, duration) pcall(function() Rayfield:N
 local function UIToggleNotify(featureName, state) if not UI_INTERACTION_NOTIFS or SYSTEM_LOADING then return end NotifyAlert("Feature Updated", featureName .. " is now " .. (state and "ON" or "OFF"), 1.5) end
 local function UIButtonNotify(actionName) if not UI_INTERACTION_NOTIFS or SYSTEM_LOADING then return end NotifyAlert("Action Triggered", actionName .. " executed.", 1.5) end
 
-local ESPGLOBAL, ESPGUN, ESP_M_S, ESPCOIN, ESPTEXT, ESPTRACER = false, false, false, false, false, false
-local ESP_STYLE = "Highlight"
-local AUTOGUN, NOTIFY_GUN, NOTIFY_ROLES, NOTIFY_FARM, NOTIFY_COMBAT = false, false, false, true, true
-local SpinbotActive, SpinbotSpeed, spinbotConn = false, 20, nil
-local AutoFlingMurderer, AutoFlingSheriff = false, false
-local FlungThisRound = {Murderer = false, Sheriff = false}
-
-local lastGunState, knownMurderer, knownSheriff, knownHero = false, nil, nil, nil
+local AUTOGUN = false
 local MatchPlayers, isKillingAll = {}, false
 
-local colorMurder, colorSheriff, colorHero, colorInnocent = Color3.fromRGB(255, 0, 0), Color3.fromRGB(0, 0, 255), Color3.fromRGB(255, 255, 0), Color3.fromRGB(0, 255, 0)
-local colorGunDrop, colorCoin = Color3.fromRGB(255, 100, 0), Color3.fromRGB(212, 175, 55)
-
 local TableMM = {["Murderer"] = nil, ["Sheriff"] = nil, ["Hero"] = nil}
-local isFarmActive, farmMethod, farmSpeed, tweenWaitDelay = false, "Walk", 50, 0.2
+local isFarmActive, farmMethod, farmSpeed, tweenWaitDelay = false, "Walk", 15, 0.2
 local isTeleportingGun, iAmDead, bagFullNotified = false, false, false
 local totalSessionCoins, coinsThisRound, processedCoins = 0, 0, {}
-local autoResetOnFull, autoKillAtMaxCoins, SessionCoinLabel = false, false, nil 
 local cachedCoinContainer = nil
-local currentAvatarAnim, gameEmoteSelected = "Anthro (Default)", "zen"
+local SessionCoinLabel = nil
 
 local function getSheriffOrHero()
     local hero = TableMM["Hero"] if hero and hero.Character and hero.Character:FindFirstChild("HumanoidRootPart") and hero.Character:FindFirstChild("Humanoid") and hero.Character.Humanoid.Health > 0 then return hero end
@@ -104,23 +93,9 @@ local function findNewCoinContainer()
     return cachedCoinContainer
 end
 
-local function clearCoinESP() local container = findNewCoinContainer() if container then for _, obj in ipairs(container:GetDescendants()) do if obj.Name == "HighCoin" then pcall(function() obj:Destroy() end) end end end end
-local function clearGunESP() local gunObj = workspace:FindFirstChild("GunDrop", true) if gunObj then local hl = gunObj:FindFirstChild("HighGun") if hl then pcall(function() hl:Destroy() end) end end end
-
 local function handleMatchReset()
     iAmDead = false coinsThisRound = 0 bagFullNotified = false table.clear(processedCoins) cachedCoinContainer = nil
     TableMM["Murderer"] = nil TableMM["Sheriff"] = nil TableMM["Hero"] = nil
-    knownMurderer = nil knownSheriff = nil knownHero = nil
-    FlungThisRound.Murderer = false FlungThisRound.Sheriff = false
-    
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player.Character then 
-            for _, child in ipairs(player.Character:GetDescendants()) do 
-                if child.Name == "PlayerHighlight" or child.Name == "ChamsAdornment" or (child:IsA("BillboardGui") and child.Name ~= HUB_NAME.."OwnerTag") then pcall(function() child:Destroy() end) end 
-            end 
-        end
-    end
-    clearCoinESP() clearGunESP()
 end
 
 local function applyGodMode()
@@ -134,18 +109,17 @@ local function applyGodMode()
     newHum.Died:Connect(function() local h = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart") if h then Camera.CameraSubject = h end end)
     task.wait(0.1) if not getgenv()[PROJECT_ID.."_Active"] then return end
     if char:FindFirstChild("deku") then char.deku:Destroy() end if animate then animate.Disabled = false end
-    if NOTIFY_COMBAT then NotifyAlert("God Mode", "Classic bypass applied.") end
+    NotifyAlert("God Mode", "Classic bypass applied.")
 end
 
 local AI_Patch = {}
-local ai_loopActive, ai_stopCurrentMovement, ai_coinFolder = false, false, nil
+local ai_loopActive = false
 local ai_path = PathfindingService:CreatePath({AgentRadius = 1.5, AgentHeight = 4.0, AgentCanJump = true, AgentJumpHeight = 7, AgentMaxSlope = 45, WaypointSpacing = 2})
 
-function AI_Patch.Configure(config) ai_coinFolder, farmMethod, farmSpeed = config.Folder, config.Method or "Walk", config.Speed or 50 end
-function AI_Patch.StopMovement() ai_stopCurrentMovement = true Hex:CancelTween() end
+function AI_Patch.Configure(config) farmMethod, farmSpeed = config.Method or "Walk", config.Speed or 50 end
+function AI_Patch.StopMovement() Hex:CancelTween() end
 
 function AI_Patch.MoveTo(destination)
-    ai_stopCurrentMovement = false
     local _, hrp, hum = getCharacterData() if not hrp or not hum or iAmDead then return false end
     local targetPosition = typeof(destination) == "Vector3" and destination or (destination:IsA("BasePart") and destination.Position) if not targetPosition then return false end
 
@@ -153,7 +127,7 @@ function AI_Patch.MoveTo(destination)
         local success, _ = pcall(function() ai_path:ComputeAsync(hrp.Position, targetPosition) end)
         if not success or ai_path.Status ~= Enum.PathStatus.Success then hum:MoveTo(targetPosition) task.wait(1) if typeof(destination) == "Instance" then Hex:TouchPart(destination) end return true end
         for _, waypoint in ipairs(ai_path:GetWaypoints()) do
-            if not getgenv()[PROJECT_ID.."_Active"] or ai_stopCurrentMovement or iAmDead or not isFarmActive then return false end
+            if not getgenv()[PROJECT_ID.."_Active"] or iAmDead or not isFarmActive then return false end
             local raycastResult = workspace:Raycast(hrp.Position, (waypoint.Position - hrp.Position).Unit * 4)
             if raycastResult or waypoint.Action == Enum.PathWaypointAction.Jump or (waypoint.Position.Y - hrp.Position.Y > 3) then if hum:GetState() ~= Enum.HumanoidStateType.Jumping then hum.Jump = true task.wait(0.3) end end
             hum:MoveTo(waypoint.Position)
@@ -167,25 +141,18 @@ function AI_Patch.MoveTo(destination)
 end
 
 function AI_Patch.StartCollection()
-    if ai_loopActive or iAmDead or not ai_coinFolder then return end
+    if ai_loopActive or iAmDead then return end
     ai_loopActive = true
     task.spawn(function()
         while getgenv()[PROJECT_ID.."_Active"] and ai_loopActive and not iAmDead and isFarmActive do
             if coinsThisRound >= 40 then
-                if not bagFullNotified then
-                    bagFullNotified = true
-                    local isMurderer = (TableMM["Murderer"] == LocalPlayer)
-                    if isMurderer and autoKillAtMaxCoins then 
-                        if performKillAllFunc then performKillAllFunc() end
-                    elseif not isMurderer and autoResetOnFull then 
-                        local _, _, hum = getCharacterData() 
-                        if hum and hum.Health > 0 then iAmDead = true AI_Patch.StopCollection() hum.Health = 0 end
-                    else AI_Patch.StopCollection() end
-                end
+                if not bagFullNotified then bagFullNotified = true AI_Patch.StopCollection() NotifyAlert("Auto-Farm", "Bag Full (40/40)! Farm Paused.") end
                 break
             end
             
-            local _, hrp, _ = getCharacterData() if not hrp then task.wait(1) continue end
+            local ai_coinFolder = findNewCoinContainer()
+            local _, hrp, _ = getCharacterData() if not hrp or not ai_coinFolder then task.wait(1) continue end
+            
             local closestCoin, shortestDistance = nil, math.huge
             for _, obj in ipairs(ai_coinFolder:GetChildren()) do
                 local targetPart = (obj.Name == "Coin_Server" and obj:FindFirstChild("CoinVisual")) or (obj:IsA("BasePart") and obj)
@@ -272,10 +239,8 @@ local function ToggleHUD(id, state, text, pos, color, callback)
     if state then CreateMobileButton(id, text, pos, color, callback)
     elseif MobileHUD[id] then MobileHUD[id]:Destroy() MobileHUD[id] = nil end
 end
---// =======================================================
---// 11. COMBAT OVERHAUL (NETWORK BYPASS SILENT AIM)
---// =======================================================
 
+--// COMBAT OVERHAUL (NETWORK BYPASS SILENT AIM)
 local function getGun()
     local char, _, _ = getCharacterData()
     if char and char:FindFirstChild("Gun") then return char.Gun end
@@ -336,7 +301,6 @@ getgenv().performKillAllFunc = function()
     end)
 end
 
--- Network Direct Shoot (Always Torso)
 local function performShoot(targetRoot)
     local gun = getGun()
     if not gun then return end
@@ -361,7 +325,6 @@ local function performShoot(targetRoot)
                 weaponService.GunFired:FireServer(handle, origin.Position, predictedPos, targetRoot)
             end
         end)
-        if NOTIFY_COMBAT then NotifyAlert("Assassination", "Target Executed!") end
     end
 end
 
@@ -380,7 +343,6 @@ local function executeRealKill(targetRole)
         local _, _, hum = getCharacterData()
         if tool.Parent == LocalPlayer.Backpack and hum then hum:EquipTool(tool) task.wait(0.3) end
         LocalBringAndKill(target.Character, tool)
-        if NOTIFY_COMBAT then NotifyAlert("Assassination", "Sheriff Down!") end
     else
         local gun = getGun()
         if not gun then return end
@@ -393,9 +355,7 @@ local function executeRealKill(targetRole)
     end
 end
 
---// =======================================================
---// 12. EVENT CONNECTIONS & BACKGROUND LOOPS
---// =======================================================
+--// EVENT CONNECTIONS & BACKGROUND LOOPS
 if PlayerDataEvent then
     Hex.Janitor:Add(PlayerDataEvent.OnClientEvent:Connect(function(data)
         if data then
